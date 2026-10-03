@@ -133,6 +133,52 @@ struct GitWorktreeForkTopologyIntegrationTests {
         #expect(materializationReport.preservedGitRepositoryCount == 3)
     }
 
+    @Test("SwiftPM-style read-only nested repositories are re-homed and keep their file modes")
+    func readOnlyNestedRepositoriesAreRehomed() async throws {
+        // Arrange: SwiftPM makes every file in a checkout read-only, including .git/HEAD; a --shared
+        // clone also carries a read-only objects/info/alternates. The fork rewrites both while re-homing.
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-readonly-nested")
+        defer {
+            restoreOwnerWrite(under: fixture.repository.root)
+            fixture.remove()
+        }
+        let root = fixture.repository.root
+        try fixture.write(".gitignore", ".build/\n")
+        try fixture.git.run("add", ".gitignore")
+        try fixture.git.run("commit", "-qm", "ignore build")
+        let checkout = fixture.source.appending(path: ".build/checkouts/swift-syntax")
+        _ = try makeRepository(at: checkout, file: "Package.swift", fixture: fixture)
+        let upstream = try makeRepository(at: root.appending(path: "upstream"), file: "up.txt", fixture: fixture)
+        let sharedCheckout = fixture.source.appending(path: ".build/checkouts/shared")
+        try fixture.git.run(["clone", "-q", "--shared", upstream.path, sharedCheckout.path])
+        for nested in [checkout, sharedCheckout] {
+            try makeFilesReadOnly(under: nested.appending(path: ".git"))
+        }
+        let destination = fixture.destination()
+
+        // Act
+        let result = try await LibGit2AgentStudioGitLocalClient().forkWorktree(fixture.request())
+
+        // Assert
+        for nested in [".build/checkouts/swift-syntax", ".build/checkouts/shared"] {
+            let nestedDestination = destination.appending(path: nested)
+            #expect(
+                try fixture.blobID("HEAD", at: nestedDestination)
+                    == fixture.blobID("HEAD", at: fixture.source.appending(path: nested)), "\(nested)")
+            let head = try #require(GitWorktreeForkFileProbe.info(nestedDestination.appending(path: ".git/HEAD")))
+            #expect(head.st_mode & 0o222 == 0, "\(nested) HEAD keeps its read-only mode")
+        }
+        #expect(
+            try fixture.git.succeeds(
+                "cat-file", "-e", "HEAD:up.txt",
+                currentDirectory: destination.appending(path: ".build/checkouts/shared")))
+        guard case .copyOnWrite(let materializationReport) = result.materialization else {
+            Issue.record("expected copy-on-write materialization")
+            return
+        }
+        #expect(materializationReport.preservedGitRepositoryCount == 2)
+    }
+
     @Test(
         "cone, non-cone, and sparse-index sources keep sparse behavior without mass deletions",
         arguments: [SparseScenario.cone, .nonCone, .sparseIndex]
@@ -418,6 +464,31 @@ struct GitWorktreeForkTopologyIntegrationTests {
         let resolved = try #require(realpath(url.path, nil))
         defer { free(resolved) }
         return URL(fileURLWithPath: String(cString: resolved))
+    }
+
+    /// Clears every write bit on regular files beneath `root`, the way SwiftPM locks its checkouts.
+    private func makeFilesReadOnly(under root: URL) throws {
+        try setRegularFileModes(under: root) { $0 & ~0o222 }
+    }
+
+    /// Restores owner write on regular files so fixture cleanup can always delete them.
+    private func restoreOwnerWrite(under root: URL) {
+        try? setRegularFileModes(under: root) { $0 | 0o200 }
+    }
+
+    private func setRegularFileModes(under root: URL, _ transform: (Int) -> Int) throws {
+        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else {
+            return
+        }
+        for case let url as URL in enumerator {
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            guard attributes[.type] as? FileAttributeType == .typeRegular,
+                let mode = (attributes[.posixPermissions] as? NSNumber)?.intValue
+            else {
+                continue
+            }
+            try FileManager.default.setAttributes([.posixPermissions: transform(mode)], ofItemAtPath: url.path)
+        }
     }
 }
 

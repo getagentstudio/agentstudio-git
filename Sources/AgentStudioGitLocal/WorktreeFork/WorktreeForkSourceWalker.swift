@@ -24,6 +24,7 @@ struct WorktreeForkSourceWalker: Sendable {
         var leafBatches: [WorktreeForkLeafBatch] = []
         var skippedEntries: [GitWorktreeMaterializationSkippedEntry] = []
         var nestedGitEntryPaths: [String] = []
+        var gitDirectoryCandidatePaths: [String] = []
         var regularFilePathsByIdentity: [WorktreeForkEntryIdentity: [String]] = [:]
         var pendingDirectories = [""]
 
@@ -32,6 +33,9 @@ struct WorktreeForkSourceWalker: Sendable {
             let listing = try listDirectory(sourceRootDescriptor, relativePath: directoryRelativePath)
             directories.append(
                 WorktreeForkPlannedDirectory(relativePath: directoryRelativePath, identity: listing.identity))
+            if !directoryRelativePath.isEmpty, Self.looksLikeGitDirectory(listing.entries) {
+                gitDirectoryCandidatePaths.append(directoryRelativePath)
+            }
 
             var leaves: [WorktreeForkPlannedLeaf] = []
             var childDirectories: [String] = []
@@ -83,8 +87,22 @@ struct WorktreeForkSourceWalker: Sendable {
             leafBatches: primaryLeafBatches,
             hardLinkGroups: hardLinkGroups,
             skippedEntries: skippedEntries.sorted { $0.relativePath < $1.relativePath },
-            nestedGitEntryPaths: nestedGitEntryPaths.sorted()
+            nestedGitEntryPaths: nestedGitEntryPaths.sorted(),
+            gitDirectoryCandidatePaths: gitDirectoryCandidatePaths.sorted()
         )
+    }
+
+    /// Git's own shape test for a Git directory: a `HEAD` entry beside `objects/` and `refs/` directories.
+    /// Bare caches and separate Git directories inside ordinary content have this shape without a `.git` name.
+    private static func looksLikeGitDirectory(_ entries: [WorktreeForkDirectoryEntry]) -> Bool {
+        var kindByName: [String: WorktreeForkEntryKind] = [:]
+        for entry in entries where ["HEAD", "objects", "refs"].contains(entry.name) {
+            kindByName[entry.name] = WorktreeForkEntryKind(mode: entry.info.st_mode)
+        }
+        guard let headKind = kindByName["HEAD"], headKind != .directory else {
+            return false
+        }
+        return kindByName["objects"] == .directory && kindByName["refs"] == .directory
     }
 
     private func listDirectory(

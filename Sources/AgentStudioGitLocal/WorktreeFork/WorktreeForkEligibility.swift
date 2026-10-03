@@ -64,6 +64,26 @@ struct WorktreeForkHostFactsProvider: Sendable {
 
     let operatingSystemMajorVersion: @Sendable () -> Int
     let volumeFacts: @Sendable (URL) throws(GitWorktreeForkError) -> WorktreeForkVolumeFacts
+    /// The directory `~/` names in configuration paths. Git expands `~` from `HOME`, so the live value does
+    /// too; tests point it at a fixture directory instead of the real home.
+    let homeDirectory: @Sendable () -> URL
+
+    init(
+        operatingSystemMajorVersion: @escaping @Sendable () -> Int,
+        volumeFacts: @escaping @Sendable (URL) throws(GitWorktreeForkError) -> WorktreeForkVolumeFacts,
+        homeDirectory: @escaping @Sendable () -> URL = Self.liveHomeDirectory
+    ) {
+        self.operatingSystemMajorVersion = operatingSystemMajorVersion
+        self.volumeFacts = volumeFacts
+        self.homeDirectory = homeDirectory
+    }
+
+    private static func liveHomeDirectory() -> URL {
+        if let home = ProcessInfo.processInfo.environment["HOME"], home.hasPrefix("/") {
+            return URL(fileURLWithPath: home)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+    }
 
     private static func liveVolumeFacts(at path: URL) throws(GitWorktreeForkError) -> WorktreeForkVolumeFacts {
         var fileSystem = statfs()

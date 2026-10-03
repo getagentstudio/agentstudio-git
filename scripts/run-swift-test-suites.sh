@@ -30,6 +30,7 @@ suites=(
   WorktreeForkPolicyTests
   SparseCheckoutMatcherTests
   WorktreeForkCleanEntryAdoptionTests
+  WorktreeForkPrivateCounterpartTests
   GitProcessRunnerTests
   SystemGitRemoteClientTests
   GitRemoteOutputParserTests
@@ -61,6 +62,14 @@ suites=(
   GitWorktreeForkTrackedStateIntegrationTests
   GitWorktreeForkChangesOnlyFilterIntegrationTests
   GitWorktreeForkCleanAdoptionIntegrationTests
+  GitWorktreeForkMetadataFlagsIntegrationTests
+  GitWorktreeForkRehomedMetadataIntegrationTests
+  GitWorktreeForkNestedConfigurationIntegrationTests
+  GitWorktreeForkNestedIncludeIntegrationTests
+  GitWorktreeForkIncludeOrderIntegrationTests
+  GitWorktreeForkExternalIncludeIntegrationTests
+  GitWorktreeForkNestedRepositoryIntegrationTests
+  GitWorktreeForkPrivateAdminIntegrationTests
   GitCommitRangeCountIntegrationTests
   GitBranchIntegrationIntegrationTests
   GitBranchIntegrationHistoryIntegrationTests

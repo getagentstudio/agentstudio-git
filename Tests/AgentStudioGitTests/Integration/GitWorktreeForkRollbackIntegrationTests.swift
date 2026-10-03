@@ -1,4 +1,5 @@
 import AgentStudioGit
+import Darwin
 import Dispatch
 import Foundation
 import Testing
@@ -134,6 +135,56 @@ struct GitWorktreeForkRollbackIntegrationTests {
         #expect(!GitWorktreeForkFileProbe.exists(fixture.linkedWorktreeAdministration()))
         #expect(try fixture.branchNames() == branchesBefore)
         #expect(try fixture.git.run("worktree", "list", "--porcelain") == worktreesBefore)
+    }
+
+    @Test(
+        "a late failure removes cloned build output that carries deny-delete access control entries",
+        arguments: [
+            WorktreeForkFaultPoint.afterMaterialization,
+            .afterDirectoryMetadataApplied,
+            .afterIndexesBuilt,
+            .afterValidation,
+        ]
+    )
+    func lateFailureRemovesAccessControlProtectedEntries(point: WorktreeForkFaultPoint) async throws {
+        // Arrange: CoW clones carry file ACLs immediately and directory ACLs once directory metadata lands.
+        let fixture = try GitWorktreeForkFixture.make(prefix: "agentstudio-git-fork-acl-rollback")
+        let protectedFile = fixture.source.appending(path: ".build/protected/payload.bin")
+        let protectedDirectory = fixture.source.appending(path: ".build/protected")
+        defer {
+            for root in [fixture.source, fixture.destination()] {
+                for relativePath in [".build/protected/payload.bin", ".build/protected"] {
+                    Self.removeExtendedAccessControlList(root.appending(path: relativePath))
+                }
+            }
+            fixture.remove()
+        }
+        try fixture.write(".gitignore", ".build/\n")
+        try fixture.git.run("add", ".gitignore")
+        try fixture.git.run("commit", "-qm", "ignore build")
+        try fixture.write(".build/protected/payload.bin", "protected build output\n")
+        try Self.setAccessControlText(Self.denyDeleteFileEntry, on: protectedFile)
+        try Self.setAccessControlText(Self.denyDeleteDirectoryEntry, on: protectedDirectory)
+        let branchesBefore = try fixture.branchNames()
+        let worktreesBefore = try fixture.git.run("worktree", "list", "--porcelain")
+        let faults = WorktreeForkFaultInjector { reached throws(GitWorktreeForkError) in
+            if reached == point {
+                throw Self.injected
+            }
+        }
+        let client = LibGit2AgentStudioGitLocalClient(worktreeForkWriter: LibGit2WorktreeForkWriter(faults: faults))
+
+        // Act
+        let failure = await forkFailure(client, fixture.request())
+
+        // Assert
+        #expect(failure == Self.injected)
+        #expect(!GitWorktreeForkFileProbe.exists(fixture.destination()))
+        #expect(!GitWorktreeForkFileProbe.exists(fixture.linkedWorktreeAdministration()))
+        #expect(try fixture.branchNames() == branchesBefore)
+        #expect(try fixture.git.run("worktree", "list", "--porcelain") == worktreesBefore)
+        #expect(Self.accessControlText(protectedFile) == Self.denyDeleteFileEntry)
+        #expect(Self.accessControlText(protectedDirectory) == Self.denyDeleteDirectoryEntry)
     }
 
     @Test("a cleanup failure returns cleanup-incomplete with ordered residue and never success")
@@ -318,6 +369,37 @@ struct GitWorktreeForkRollbackIntegrationTests {
         #expect(failure == .cancelled)
         #expect(!GitWorktreeForkFileProbe.exists(fixture.destination()))
         #expect(try fixture.branchNames() == ["refs/heads/main"])
+    }
+
+    private static let everyoneQualifier = "group:ABCDEFAB-CDEF-ABCD-EFAB-CDEF0000000C:everyone:12"
+    private static let denyDeleteFileEntry = "!#acl 1\n\(everyoneQualifier):deny:delete\n"
+    private static let denyDeleteDirectoryEntry =
+        "!#acl 1\n\(everyoneQualifier):deny:write,delete,delete_child\n"
+
+    private static func setAccessControlText(_ text: String, on url: URL) throws {
+        let accessControlList = try #require(acl_from_text(text))
+        defer { acl_free(UnsafeMutableRawPointer(accessControlList)) }
+        try #require(acl_set_link_np(url.path, ACL_TYPE_EXTENDED, accessControlList) == 0)
+    }
+
+    private static func accessControlText(_ url: URL) -> String? {
+        guard let accessControlList = acl_get_link_np(url.path, ACL_TYPE_EXTENDED) else {
+            return nil
+        }
+        defer { acl_free(UnsafeMutableRawPointer(accessControlList)) }
+        guard let text = acl_to_text(accessControlList, nil) else {
+            return nil
+        }
+        defer { acl_free(UnsafeMutableRawPointer(text)) }
+        return String(cString: text)
+    }
+
+    private static func removeExtendedAccessControlList(_ url: URL) {
+        guard let empty = acl_init(0) else {
+            return
+        }
+        defer { acl_free(UnsafeMutableRawPointer(empty)) }
+        _ = acl_set_link_np(url.path, ACL_TYPE_EXTENDED, empty)
     }
 
     /// A source with enough leaf batches for concurrent workers and a read-only directory, so rollback must

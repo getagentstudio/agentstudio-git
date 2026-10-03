@@ -42,7 +42,7 @@ enum WorktreeForkEntryMetadata {
     /// Copies every extended attribute through descriptors so directories, symlinks (`O_SYMLINK`), and FIFOs
     /// share one path. A node kind that cannot carry attributes reports `ENOTSUP` and has none to lose.
     /// A kernel-managed attribute the destination already carries (for example provenance) is accepted.
-    private static func copyExtendedAttributes(
+    static func copyExtendedAttributes(
         from source: Int32,
         to destination: Int32,
         relativePath: String

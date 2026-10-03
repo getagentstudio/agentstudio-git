@@ -27,6 +27,117 @@ struct WorktreeForkTopologyValidator: Sendable {
             try validateNode(node, evidence: evidenceByNode[node.node.relativePath])
         }
         try validateMirrorSymlinks()
+        let relocation = WorktreeForkSourcePathRelocation(
+            plan: plan,
+            administrationByNode: Dictionary(
+                uniqueKeysWithValues: rehomed.map { ($0.node.relativePath, $0.destinationAdministration) })
+        )
+        for copied in plan.gitTopology.copiedGitDirectories {
+            try validateCopiedAlternates(copied, relocation: relocation)
+            try validateCopiedRegistrations(copied)
+        }
+        try WorktreeForkConfigurationPathValidation(plan: plan, relocation: relocation).validate(
+            GitRepositoryStateRehomer.configurationRoots(plan: plan, nodes: rehomed))
+    }
+
+    /// Every alternate a copied Git directory holds must resolve to destination-owned state (the destination
+    /// tree or the fork's own administration, where object mirrors live) or to the source repository's shared
+    /// common directory, which the fork itself uses. The one exception is a line that already dangled in the
+    /// source, which the re-homer keeps as written.
+    private func validateCopiedAlternates(
+        _ copied: WorktreeForkCopiedGitDirectory,
+        relocation: WorktreeForkSourcePathRelocation
+    ) throws(GitWorktreeForkError) {
+        let objects = plan.destinationRoot.appending(path: copied.relativePath).appending(path: "objects")
+        let danglingInSource = Set(copied.alternates.filter { $0.target == nil }.map(\.line))
+        for line in WorktreeForkGitTopologyPlanner.alternateLines(objects) {
+            let recorded = line.hasPrefix("/") ? URL(fileURLWithPath: line) : objects.appending(path: line)
+            guard case .success(let resolved) = WorktreeForkDescriptors.realpathURL(recorded) else {
+                if danglingInSource.contains(line) {
+                    continue
+                }
+                throw .validationFailed(reason: .sourceAdministrationReference, relativePath: copied.relativePath)
+            }
+            guard
+                allowedPrefixes.contains(where: { (resolved.path + "/").hasPrefix($0) })
+                    || relocation.counterpart(of: resolved) == .sharedRepository
+            else {
+                throw .validationFailed(reason: .sourceAdministrationReference, relativePath: copied.relativePath)
+            }
+        }
+    }
+
+    /// Every linked-worktree registration left in a copied Git directory must be one Git accepts: its `gitdir`
+    /// names a worktree outside the tree (kept by the outside rule), or a gitfile inside it whose `gitdir:`
+    /// line leads back to this registration, the reciprocity Git's `validate_worktree` requires. A
+    /// registration Git would already reject in the source is kept as written: the copy is no more broken.
+    private func validateCopiedRegistrations(_ copied: WorktreeForkCopiedGitDirectory) throws(GitWorktreeForkError) {
+        let destinationWorktrees = plan.destinationRoot.appending(path: copied.relativePath).appending(
+            path: "worktrees")
+        let sourceWorktrees = plan.sourceRoot.appending(path: copied.relativePath).appending(path: "worktrees")
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: destinationWorktrees.path)) ?? [] {
+            let destination = Self.registrationShape(
+                destinationWorktrees.appending(path: name), tree: plan.destinationRoot, sourceRoot: plan.sourceRoot)
+            guard destination == .broken else {
+                continue
+            }
+            let source = Self.registrationShape(
+                sourceWorktrees.appending(path: name), tree: plan.sourceRoot, sourceRoot: nil)
+            guard source == .broken else {
+                throw .validationFailed(
+                    reason: .worktreeRegistrationInvalid, relativePath: "\(copied.relativePath)/worktrees/\(name)")
+            }
+        }
+    }
+
+    private enum RegistrationShape: Equatable {
+        /// Not a registration (no `gitdir` file).
+        case absent
+        /// Names a worktree outside `tree` and outside the source tree.
+        case outside
+        /// Names a gitfile inside `tree` that leads back to the registration.
+        case reciprocal
+        /// Dangles, names the source tree from a destination copy, or names something inside `tree` that does
+        /// not lead back.
+        case broken
+    }
+
+    /// `sourceRoot` is given when classifying a destination copy: a registration naming the source tree there
+    /// keeps the copy dependent on the source and is broken, never outside.
+    private static func registrationShape(_ registration: URL, tree: URL, sourceRoot: URL?) -> RegistrationShape {
+        guard let text = try? String(contentsOf: registration.appending(path: "gitdir"), encoding: .utf8) else {
+            return .absent
+        }
+        let line = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let recorded = line.hasPrefix("/") ? URL(fileURLWithPath: line) : registration.appending(path: line)
+        guard case .success(let gitfile) = WorktreeForkDescriptors.realpathURL(recorded),
+            case .success(let canonicalTree) = WorktreeForkDescriptors.realpathURL(tree)
+        else {
+            return .broken
+        }
+        guard WorktreeForkAdministrativeSymlinks.relativeComponents(of: gitfile, beneath: canonicalTree) != nil else {
+            if let sourceRoot,
+                WorktreeForkAdministrativeSymlinks.relativeComponents(of: gitfile, beneath: sourceRoot) != nil
+            {
+                return .broken
+            }
+            return .outside
+        }
+        guard let gitfileText = try? String(contentsOf: gitfile, encoding: .utf8), gitfileText.hasPrefix("gitdir: ")
+        else {
+            return .broken
+        }
+        let pointer = gitfileText.dropFirst("gitdir: ".count).trimmingCharacters(in: .whitespacesAndNewlines)
+        let back =
+            pointer.hasPrefix("/")
+            ? URL(fileURLWithPath: pointer) : gitfile.deletingLastPathComponent().appending(path: pointer)
+        guard case .success(let resolvedBack) = WorktreeForkDescriptors.realpathURL(back),
+            case .success(let canonicalRegistration) = WorktreeForkDescriptors.realpathURL(registration),
+            resolvedBack.path == canonicalRegistration.path
+        else {
+            return .broken
+        }
+        return .reciprocal
     }
 
     /// Every symlink inside a destination-owned object mirror must resolve inside that same mirror.

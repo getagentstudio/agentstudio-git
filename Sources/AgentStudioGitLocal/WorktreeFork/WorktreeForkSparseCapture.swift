@@ -38,6 +38,7 @@ enum WorktreeForkSparseCapture {
                 persistedFlags?[path] ?? !matcher.includes(path)
             })
         return WorktreeForkSparsePlan(
+            sourceGitDirectory: gitDirectory,
             patternFile: patternFile,
             worktreeConfiguration: worktreeConfiguration,
             skipWorktreePaths: skipWorktreePaths

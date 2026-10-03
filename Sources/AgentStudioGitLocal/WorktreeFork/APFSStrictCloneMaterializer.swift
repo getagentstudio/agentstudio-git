@@ -112,6 +112,11 @@ struct APFSStrictCloneMaterializer: Sendable {
         return finished.observations
     }
 
+    /// `link(2)` refuses an immutable or append-only inode, and each primary clone already carries its
+    /// source's flags. Those flags are lifted from the destination primary only while its secondaries are
+    /// linked, then put back, so the inode still ends with the source's flags.
+    static let linkBlockingFlagMask = UInt32(UF_IMMUTABLE | UF_APPEND | SF_IMMUTABLE | SF_APPEND)
+
     func linkHardLinkSecondaries(
         _ plan: WorktreeForkFilesystemPlan,
         sourceRootDescriptor: Int32,
@@ -122,21 +127,72 @@ struct APFSStrictCloneMaterializer: Sendable {
             let (primaryParent, primaryName) = WorktreeForkDescriptors.splitParent(group.primaryRelativePath)
             let primaryDescriptor = try openDestinationDirectory(destinationRootDescriptor, primaryParent)
             defer { close(primaryDescriptor) }
-            for secondaryPath in group.secondaryRelativePaths {
-                try cancellation.throwIfCancelled()
-                let (parent, name) = WorktreeForkDescriptors.splitParent(secondaryPath)
-                try verifySourceIdentity(
-                    sourceRootDescriptor, parent: parent, name: name, expected: group.identity, path: secondaryPath)
-                let parentDescriptor = try openDestinationDirectory(destinationRootDescriptor, parent)
-                defer { close(parentDescriptor) }
-                let linkResult = primaryName.withCString { primary in
-                    name.withCString { secondary in linkat(primaryDescriptor, primary, parentDescriptor, secondary, 0) }
-                }
-                guard linkResult == 0 else {
-                    throw .entryFailed(relativePath: secondaryPath, reason: .entryCreationFailed, errorNumber: errno)
-                }
-                linkedCount += 1
+            let primaryFile = primaryName.withCString {
+                openat(primaryDescriptor, $0, WorktreeForkLeafWorker.leafOpenFlags)
             }
+            guard primaryFile >= 0 else {
+                throw .entryFailed(
+                    relativePath: group.primaryRelativePath, reason: .entryCreationFailed, errorNumber: errno)
+            }
+            defer { close(primaryFile) }
+            let primaryFlags: UInt32
+            switch WorktreeForkDescriptors.statDescriptor(primaryFile) {
+            case .success(let info):
+                primaryFlags = info.st_flags
+            case .failure(let failure):
+                throw .entryFailed(
+                    relativePath: group.primaryRelativePath, reason: .entryCreationFailed, errorNumber: failure.code)
+            }
+            let blockingFlags = primaryFlags & Self.linkBlockingFlagMask
+            if blockingFlags != 0, fchflags(primaryFile, primaryFlags & ~blockingFlags) != 0 {
+                throw .entryFailed(
+                    relativePath: group.primaryRelativePath, reason: .metadataNotReproducible, errorNumber: errno)
+            }
+            var linkFailure: GitWorktreeForkError?
+            do throws(GitWorktreeForkError) {
+                linkedCount += try linkSecondaries(
+                    of: group,
+                    primaryDescriptor: primaryDescriptor,
+                    primaryName: primaryName,
+                    sourceRootDescriptor: sourceRootDescriptor,
+                    destinationRootDescriptor: destinationRootDescriptor
+                )
+            } catch {
+                linkFailure = error
+            }
+            if blockingFlags != 0, fchflags(primaryFile, primaryFlags) != 0, linkFailure == nil {
+                linkFailure = .entryFailed(
+                    relativePath: group.primaryRelativePath, reason: .metadataNotReproducible, errorNumber: errno)
+            }
+            if let linkFailure {
+                throw linkFailure
+            }
+        }
+        return linkedCount
+    }
+
+    private func linkSecondaries(
+        of group: WorktreeForkHardLinkGroup,
+        primaryDescriptor: Int32,
+        primaryName: String,
+        sourceRootDescriptor: Int32,
+        destinationRootDescriptor: Int32
+    ) throws(GitWorktreeForkError) -> Int {
+        var linkedCount = 0
+        for secondaryPath in group.secondaryRelativePaths {
+            try cancellation.throwIfCancelled()
+            let (parent, name) = WorktreeForkDescriptors.splitParent(secondaryPath)
+            try verifySourceIdentity(
+                sourceRootDescriptor, parent: parent, name: name, expected: group.identity, path: secondaryPath)
+            let parentDescriptor = try openDestinationDirectory(destinationRootDescriptor, parent)
+            defer { close(parentDescriptor) }
+            let linkResult = primaryName.withCString { primary in
+                name.withCString { secondary in linkat(primaryDescriptor, primary, parentDescriptor, secondary, 0) }
+            }
+            guard linkResult == 0 else {
+                throw .entryFailed(relativePath: secondaryPath, reason: .entryCreationFailed, errorNumber: errno)
+            }
+            linkedCount += 1
         }
         return linkedCount
     }

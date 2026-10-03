@@ -73,14 +73,17 @@ struct WorktreeForkPlanner: Sendable {
             let filesystem: WorktreeForkFilesystemPlan
             let changesOnly: WorktreeForkChangesOnlyPlan?
             let nestedGitEntryPaths: [String]
+            let gitDirectoryCandidatePaths: [String]
             if request.materialization == .copyOnWrite {
                 filesystem = try WorktreeForkSourceWalker(cancellation: cancellation)
                     .walk(sourceRootDescriptor: sourceRootDescriptor)
                 nestedGitEntryPaths = filesystem.nestedGitEntryPaths
+                gitDirectoryCandidatePaths = filesystem.gitDirectoryCandidatePaths
                 changesOnly = nil
             } else {
                 filesystem = .empty
                 nestedGitEntryPaths = []
+                gitDirectoryCandidatePaths = []
                 changesOnly = try WorktreeForkChangesOnlyPlanner(cancellation: cancellation).plan(
                     sourceRootDescriptor: sourceRootDescriptor,
                     sourceRoot: sourceRoot,
@@ -89,8 +92,10 @@ struct WorktreeForkPlanner: Sendable {
             }
             let gitTopology = try planGitTopology(
                 sourceRoot: sourceRoot,
+                commonDirectory: gitCapture.commonDirectory,
                 capturedHead: gitCapture.capturedHead,
-                nestedGitEntryPaths: nestedGitEntryPaths
+                nestedGitEntryPaths: nestedGitEntryPaths,
+                gitDirectoryCandidatePaths: gitDirectoryCandidatePaths
             )
             if request.materialization == .changesOnly, gitTopology.rootSparse != nil {
                 throw .workingStateUnsupported(
@@ -105,10 +110,14 @@ struct WorktreeForkPlanner: Sendable {
                 destinationRequestPath: request.destinationPath,
                 worktreeName: destination.worktreeName,
                 commonDirectory: gitCapture.commonDirectory,
+                sourceGitDirectory: gitCapture.sourceGitDirectory,
+                homeDirectory: WorktreeForkSourcePathRelocation.canonicalized(
+                    absolutePath: hostFacts.homeDirectory().path),
                 capturedHead: gitCapture.capturedHead,
                 branchIdentity: gitCapture.branchIdentity,
                 materialization: request.materialization,
-                filesystem: filesystem,
+                filesystem: try filesystem.excludingSubtrees(
+                    gitTopology.copiedGitDirectories.flatMap(\.retiredRegistrationSubtrees)),
                 changesOnly: changesOnly,
                 gitTopology: gitTopology
             )
@@ -121,8 +130,10 @@ struct WorktreeForkPlanner: Sendable {
 
     private func planGitTopology(
         sourceRoot: URL,
+        commonDirectory: URL,
         capturedHead: WorktreeForkCapturedHead,
-        nestedGitEntryPaths: [String]
+        nestedGitEntryPaths: [String],
+        gitDirectoryCandidatePaths: [String]
     ) throws(GitWorktreeForkError) -> WorktreeForkGitTopology {
         let repository = try WorktreeForkGitHandles.openWorktree(sourceRoot)
         defer { git_repository_free(repository) }
@@ -132,11 +143,15 @@ struct WorktreeForkPlanner: Sendable {
         else {
             throw .rejected(reason: .sourceNotWorktreeRoot)
         }
-        return try WorktreeForkGitTopologyPlanner(sourceRoot: sourceRoot, cancellation: cancellation).plan(
+        return try WorktreeForkGitTopologyPlanner(
+            sourceRoot: sourceRoot, commonDirectory: commonDirectory, cancellation: cancellation
+        )
+        .plan(
             rootRepository: repository,
             rootGitDirectory: gitDirectory,
             rootCapturedHead: capturedHead,
-            nestedGitEntryPaths: nestedGitEntryPaths
+            nestedGitEntryPaths: nestedGitEntryPaths,
+            gitDirectoryCandidatePaths: gitDirectoryCandidatePaths
         )
     }
 
@@ -265,7 +280,10 @@ struct WorktreeForkPlanner: Sendable {
         }
         guard let commonDirectoryPointer = git_repository_commondir(repository),
             case .success(let commonDirectory) = WorktreeForkDescriptors.realpathURL(
-                URL(fileURLWithPath: String(cString: commonDirectoryPointer)))
+                URL(fileURLWithPath: String(cString: commonDirectoryPointer))),
+            let gitDirectoryPointer = git_repository_path(repository),
+            case .success(let sourceGitDirectory) = WorktreeForkDescriptors.realpathURL(
+                URL(fileURLWithPath: String(cString: gitDirectoryPointer)))
         else {
             throw .rejected(reason: .sourceNotWorktreeRoot)
         }
@@ -277,6 +295,7 @@ struct WorktreeForkPlanner: Sendable {
         let branchIdentity = try validateBranchIdentity(mode, capturedHead: capturedHead, repository: repository)
         return WorktreeForkGitCapture(
             commonDirectory: commonDirectory,
+            sourceGitDirectory: sourceGitDirectory,
             capturedHead: capturedHead,
             branchIdentity: branchIdentity
         )
@@ -370,6 +389,7 @@ struct WorktreeForkDestination: Sendable {
 
 struct WorktreeForkGitCapture: Sendable {
     let commonDirectory: URL
+    let sourceGitDirectory: URL
     let capturedHead: WorktreeForkCapturedHead
     let branchIdentity: WorktreeForkBranchIdentity
 }

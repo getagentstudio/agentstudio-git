@@ -10,6 +10,10 @@ struct WorktreeForkPlan: Sendable {
     let destinationRequestPath: URL
     let worktreeName: String
     let commonDirectory: URL
+    /// The source worktree's private administration; the common directory itself for a main worktree.
+    let sourceGitDirectory: URL
+    /// Canonical directory that `~/` names in configuration paths, captured once from the host facts.
+    let homeDirectory: URL
     let capturedHead: WorktreeForkCapturedHead
     let branchIdentity: WorktreeForkBranchIdentity
     let materialization: GitWorktreeForkMaterialization
@@ -125,12 +129,61 @@ struct WorktreeForkFilesystemPlan: Sendable {
     /// Relative paths of `.git` entries below the root. They are never copied as ordinary entries;
     /// Git-topology classification decides how each is realized.
     let nestedGitEntryPaths: [String]
+    /// Directories shaped like a Git directory but not named `.git`. They are copied as ordinary entries;
+    /// Git-topology classification decides which are repositories whose copied pointers need re-homing.
+    let gitDirectoryCandidatePaths: [String]
 
     static let empty = Self(
-        directories: [], leafBatches: [], hardLinkGroups: [], skippedEntries: [], nestedGitEntryPaths: [])
+        directories: [], leafBatches: [], hardLinkGroups: [], skippedEntries: [], nestedGitEntryPaths: [],
+        gitDirectoryCandidatePaths: [])
 
     var createdDirectoryCount: Int {
         max(0, directories.count - 1)
+    }
+
+    static func isPath(_ path: String, within subtree: String) -> Bool {
+        path == subtree || path.hasPrefix(subtree + "/")
+    }
+
+    /// The plan with every entry inside `subtrees` left out, so it is never materialized and the validator
+    /// expects it absent. A hard-link group keeps its paths outside the subtrees; a group whose cloned
+    /// primary is inside one while other paths are outside cannot be realized without that clone, so it
+    /// fails instead of silently changing which paths share an inode.
+    func excludingSubtrees(_ subtrees: [String]) throws(GitWorktreeForkError) -> Self {
+        guard !subtrees.isEmpty else {
+            return self
+        }
+        func isExcluded(_ path: String) -> Bool {
+            subtrees.contains { Self.isPath(path, within: $0) }
+        }
+        var keptGroups: [WorktreeForkHardLinkGroup] = []
+        for group in hardLinkGroups {
+            let secondaries = group.secondaryRelativePaths.filter { !isExcluded($0) }
+            if isExcluded(group.primaryRelativePath) {
+                guard secondaries.isEmpty else {
+                    throw .entryFailed(
+                        relativePath: group.primaryRelativePath, reason: .unresolvableGitAdministration,
+                        errorNumber: nil)
+                }
+            } else if !secondaries.isEmpty {
+                keptGroups.append(
+                    WorktreeForkHardLinkGroup(
+                        identity: group.identity, primaryRelativePath: group.primaryRelativePath,
+                        secondaryRelativePaths: secondaries))
+            }
+        }
+        return Self(
+            directories: directories.filter { !isExcluded($0.relativePath) },
+            leafBatches: leafBatches.compactMap { batch in
+                let leaves = batch.leaves.filter { !isExcluded($0.relativePath) }
+                return leaves.isEmpty
+                    ? nil : WorktreeForkLeafBatch(directoryRelativePath: batch.directoryRelativePath, leaves: leaves)
+            },
+            hardLinkGroups: keptGroups,
+            skippedEntries: skippedEntries.filter { !isExcluded($0.relativePath) },
+            nestedGitEntryPaths: nestedGitEntryPaths.filter { !isExcluded($0) },
+            gitDirectoryCandidatePaths: gitDirectoryCandidatePaths.filter { !isExcluded($0) }
+        )
     }
 
     func leafCount(of kind: WorktreeForkLeafKind) -> Int {

@@ -197,18 +197,25 @@ struct WorktreeForkRollbackJournal {
         return removeTree(path)
     }
 
-    /// Removes a transaction-owned tree, first making every directory writable so restrictive modes
-    /// reproduced from the source cannot block compensation. Symlinks are never followed.
+    /// Removes a transaction-owned tree, first making every directory writable so restrictive modes, flags,
+    /// and access control entries reproduced from the source cannot block compensation. Symlinks are never
+    /// followed. System flags cannot be cleared unprivileged; a node they protect stays and is residue.
     private func removeTree(_ path: URL) -> Bool {
         if case .failure(let failure) = WorktreeForkDescriptors.lstatPath(path) {
             return failure.code == ENOENT
         }
         let fileManager = FileManager.default
-        // Classify by lstat so no link is ever followed: clear user flags on every owned node (no-follow),
-        // and restore traversal permissions only on real directories — inline, so the lazy enumerator can
-        // then descend into a directory that was unreadable.
+        guard let emptyAccessControlList = acl_init(0) else {
+            return false
+        }
+        defer { acl_free(UnsafeMutableRawPointer(emptyAccessControlList)) }
+        // Classify by lstat so no link is ever followed: clear user flags, then the extended ACL (an
+        // immutable node refuses ACL changes), on every owned node (no-follow), and restore traversal
+        // permissions only on real directories — inline, so the lazy enumerator can then descend into a
+        // directory that was unreadable or denied listing.
         func releaseForRemoval(_ node: URL) {
             _ = node.path.withCString { lchflags($0, 0) }
+            _ = node.path.withCString { acl_set_link_np($0, ACL_TYPE_EXTENDED, emptyAccessControlList) }
             if case .success(let info) = WorktreeForkDescriptors.lstatPath(node),
                 WorktreeForkEntryKind(mode: info.st_mode) == .directory
             {

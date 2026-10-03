@@ -130,7 +130,7 @@ struct LibGit2WorktreeForkWriter: Sendable {
         try faults.reach(.afterMaterialization)
         try cancellation.throwIfCancelled()
 
-        let rehomedNodes = try GitRepositoryStateRehomer(
+        let rehomeOutcome = try GitRepositoryStateRehomer(
             plan: plan, cancellation: cancellation, lockTracker: journal.lockTracker
         )
         .rehome(journal: &journal)
@@ -145,13 +145,15 @@ struct LibGit2WorktreeForkWriter: Sendable {
 
         let indexBuilder = WorktreeForkIndexBuilder(faults: faults)
         let plannedStats = Self.plannedRegularFileStats(plan.filesystem)
+        // A clone whose bytes re-homing replaced no longer vouches for captured `HEAD`; it must be hashed.
+        let verifiedClonePaths = observations.statMatchedClonePaths.subtracting(rehomeOutcome.rewrittenWorktreePaths)
         func adoption(_ sourceIndex: WorktreeForkSourceIndexSnapshot?, prefix: String) -> WorktreeForkAdoptionContext? {
             sourceIndex.map {
                 WorktreeForkAdoptionContext(
                     sourceIndex: $0,
                     nodePrefix: prefix,
                     plannedStats: plannedStats,
-                    verifiedClonePaths: observations.statMatchedClonePaths
+                    verifiedClonePaths: verifiedClonePaths
                 )
             }
         }
@@ -165,7 +167,7 @@ struct LibGit2WorktreeForkWriter: Sendable {
         )
         indexObserver.observe("", indexEvidence)
         var nodeIndexEvidence: [String: WorktreeForkIndexRefreshEvidence] = [:]
-        for rehomed in rehomedNodes {
+        for rehomed in rehomeOutcome.nodes {
             try cancellation.throwIfCancelled()
             let evidence = try indexBuilder.buildIndex(
                 worktreePath: rehomed.destinationWorktree,
@@ -177,6 +179,8 @@ struct LibGit2WorktreeForkWriter: Sendable {
             nodeIndexEvidence[rehomed.node.relativePath] = evidence
             indexObserver.observe(rehomed.node.relativePath, evidence)
         }
+        // Nested index writes are the last administration writes; restrictive source metadata lands after them.
+        observations.normalizedEntries += try rehomeOutcome.finalizeAdministrationDirectories()
         try faults.reach(.afterIndexesBuilt)
         try cancellation.throwIfCancelled()
 
@@ -187,7 +191,7 @@ struct LibGit2WorktreeForkWriter: Sendable {
             indexEvidence: indexEvidence,
             lockTracker: journal.lockTracker
         )
-        try WorktreeForkTopologyValidator(plan: plan).validate(rehomedNodes, evidenceByNode: nodeIndexEvidence)
+        try WorktreeForkTopologyValidator(plan: plan).validate(rehomeOutcome.nodes, evidenceByNode: nodeIndexEvidence)
         try faults.reach(.afterValidation)
         try cancellation.throwIfCancelled()
         return GitForkWorktreeResult(
@@ -232,7 +236,7 @@ struct LibGit2WorktreeForkWriter: Sendable {
         let rehomedNodes = try GitRepositoryStateRehomer(
             plan: plan, cancellation: cancellation, lockTracker: journal.lockTracker
         )
-        .rehome(journal: &journal)
+        .rehome(journal: &journal).nodes
         try faults.reach(.afterGitStateRehomed)
         try cancellation.throwIfCancelled()
 

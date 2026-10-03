@@ -85,6 +85,19 @@ enum WorktreeForkDescriptors {
         return result == 0 ? .success(info) : .failure(WorktreeForkErrno.current)
     }
 
+    /// Whether something is at `path` (never followed): false only when it does not exist. Any other failure
+    /// (no search permission, an I/O error, a non-directory ancestor) is an error, never absence.
+    static func existence(_ path: URL) -> Result<Bool, WorktreeForkErrno> {
+        switch lstatPath(path) {
+        case .success:
+            return .success(true)
+        case .failure(let failure) where failure.code == ENOENT:
+            return .success(false)
+        case .failure(let failure):
+            return .failure(failure)
+        }
+    }
+
     static func realpathURL(_ path: URL) -> Result<URL, WorktreeForkErrno> {
         guard let resolved = path.path.withCString({ realpath($0, nil) }) else {
             return .failure(WorktreeForkErrno.current)

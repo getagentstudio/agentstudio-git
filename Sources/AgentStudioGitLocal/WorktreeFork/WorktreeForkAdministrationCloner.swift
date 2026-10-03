@@ -33,15 +33,43 @@ struct WorktreeForkAdministrationCloner: Sendable {
 
     /// Copies `source` into the not-yet-existing `destination`, creating missing parent directories.
     /// `created` receives the identity of the root the transaction itself created with an exclusive
-    /// `mkdir`, so rollback can prove ownership before deleting anything.
+    /// `mkdir`, so rollback can prove ownership before deleting anything. Directories stay owner-writable
+    /// so re-homing and index writes can land; the returned tree reproduces their source metadata once
+    /// the last write is done.
     func cloneTree(
         from source: URL,
         to destination: URL,
         created: (WorktreeForkEntryIdentity) -> Void = { _ in }
-    ) throws(GitWorktreeForkError) {
+    ) throws(GitWorktreeForkError) -> WorktreeForkClonedAdministrationTree {
         try WorktreeForkDatalessPolicy.withMaterializationDenied(reportPath: reportPath) {
             () throws(GitWorktreeForkError) in
             try cloneTreeWithMaterializationDenied(from: source, to: destination, created: created)
+        }
+    }
+
+    /// Clones the directory open at `sourceDirectory` into a new directory `name` created beneath the open
+    /// `destinationParent`, never resolving a destination path, so a destination ancestor swapped after the
+    /// parent was opened cannot redirect the copy. `source` and `destination` only label the returned tree,
+    /// whose later metadata pass reopens them with no symlink allowed anywhere in the path.
+    func cloneTree(
+        fromDirectory sourceDirectory: Int32,
+        intoNewDirectory name: String,
+        beneath destinationParent: Int32,
+        source: URL,
+        destination: URL
+    ) throws(GitWorktreeForkError) -> WorktreeForkClonedAdministrationTree {
+        try WorktreeForkDatalessPolicy.withMaterializationDenied(reportPath: reportPath) {
+            () throws(GitWorktreeForkError) in
+            guard name.withCString({ mkdirat(destinationParent, $0, 0o755) }) == 0 else {
+                throw .entryFailed(relativePath: reportPath, reason: .entryCreationFailed, errorNumber: errno)
+            }
+            let destinationRoot = try descriptor(
+                WorktreeForkDescriptors.openDirectory(beneath: destinationParent, relativePath: name))
+            defer { close(destinationRoot) }
+            var tree = WorktreeForkClonedAdministrationTree(
+                source: source, destination: destination, reportPath: reportPath)
+            try cloneDirectory(sourceDirectory, destinationRoot, relativePath: "", into: &tree)
+            return tree
         }
     }
 
@@ -49,7 +77,7 @@ struct WorktreeForkAdministrationCloner: Sendable {
         from source: URL,
         to destination: URL,
         created: (WorktreeForkEntryIdentity) -> Void
-    ) throws(GitWorktreeForkError) {
+    ) throws(GitWorktreeForkError) -> WorktreeForkClonedAdministrationTree {
         do {
             try FileManager.default.createDirectory(
                 at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -66,14 +94,24 @@ struct WorktreeForkAdministrationCloner: Sendable {
         }
         let destinationRoot = try descriptor(WorktreeForkDescriptors.openRoot(atCanonicalPath: destination))
         defer { close(destinationRoot) }
-        try cloneDirectory(sourceRoot, destinationRoot, relativePath: "")
+        var tree = WorktreeForkClonedAdministrationTree(
+            source: source, destination: destination, reportPath: reportPath)
+        try cloneDirectory(sourceRoot, destinationRoot, relativePath: "", into: &tree)
+        return tree
     }
 
     private func cloneDirectory(
         _ source: Int32,
         _ destination: Int32,
-        relativePath: String
+        relativePath: String,
+        into tree: inout WorktreeForkClonedAdministrationTree
     ) throws(GitWorktreeForkError) {
+        switch WorktreeForkDescriptors.statDescriptor(source) {
+        case .success(let info):
+            tree.directories.append(.init(relativePath: relativePath, identity: WorktreeForkEntryIdentity(info)))
+        case .failure(let failure):
+            throw .entryFailed(relativePath: reportPath, reason: .unreadableEntry, errorNumber: failure.code)
+        }
         let listingDescriptor = dup(source)
         guard listingDescriptor >= 0 else {
             throw .entryFailed(relativePath: reportPath, reason: .unreadableEntry, errorNumber: errno)
@@ -97,7 +135,7 @@ struct WorktreeForkAdministrationCloner: Sendable {
             else {
                 continue
             }
-            try cloneEntry(name, info: info, source, destination, childPath: childPath)
+            try cloneEntry(name, info: info, source, destination, childPath: childPath, into: &tree)
         }
     }
 
@@ -106,7 +144,8 @@ struct WorktreeForkAdministrationCloner: Sendable {
         info: Darwin.stat,
         _ source: Int32,
         _ destination: Int32,
-        childPath: String
+        childPath: String,
+        into tree: inout WorktreeForkClonedAdministrationTree
     ) throws(GitWorktreeForkError) {
         switch WorktreeForkEntryKind(mode: info.st_mode) {
         case .directory:
@@ -119,7 +158,7 @@ struct WorktreeForkAdministrationCloner: Sendable {
             let destinationChild = try descriptor(
                 WorktreeForkDescriptors.openDirectory(beneath: destination, relativePath: name))
             defer { close(destinationChild) }
-            try cloneDirectory(sourceChild, destinationChild, relativePath: childPath)
+            try cloneDirectory(sourceChild, destinationChild, relativePath: childPath, into: &tree)
         case .regularFile:
             let file = name.withCString { openat(source, $0, WorktreeForkLeafWorker.leafOpenFlags) }
             guard file >= 0 else {
@@ -153,6 +192,79 @@ struct WorktreeForkAdministrationCloner: Sendable {
         case .failure(let failure):
             throw .entryFailed(
                 relativePath: reportPath, reason: .unresolvableGitAdministration, errorNumber: failure.code)
+        }
+    }
+}
+
+/// The directories one administration clone created, parent before child, with the source identity each was
+/// cloned from. Applied last, child before parent, so restrictive modes, flags, and timestamps reproduced from
+/// the source never block a later write into the administration.
+struct WorktreeForkClonedAdministrationTree: Sendable {
+    struct Directory: Sendable {
+        let relativePath: String
+        let identity: WorktreeForkEntryIdentity
+    }
+
+    let source: URL
+    let destination: URL
+    let reportPath: String
+    var directories: [Directory] = []
+
+    func finalizeDirectories() throws(GitWorktreeForkError) -> [GitWorktreeMaterializationNormalizedEntry] {
+        let sourceRoot = try openRoot(source)
+        defer { close(sourceRoot) }
+        let destinationRoot = try openRoot(destination)
+        defer { close(destinationRoot) }
+        var normalized: [GitWorktreeMaterializationNormalizedEntry] = []
+        for directory in directories.reversed() {
+            let directoryReportPath =
+                directory.relativePath.isEmpty
+                ? reportPath : WorktreeForkDescriptors.joined(reportPath, directory.relativePath)
+            let sourceDescriptor = try openDirectory(sourceRoot, directory.relativePath, directoryReportPath)
+            defer { close(sourceDescriptor) }
+            let destinationDescriptor = try openDirectory(destinationRoot, directory.relativePath, directoryReportPath)
+            defer { close(destinationDescriptor) }
+            let sourceInfo: Darwin.stat
+            switch WorktreeForkDescriptors.statDescriptor(sourceDescriptor) {
+            case .success(let info) where WorktreeForkEntryIdentity(info) == directory.identity:
+                sourceInfo = info
+            case .success:
+                throw .sourceChanged(relativePath: directoryReportPath, reason: .entryIdentityChanged)
+            case .failure(let failure):
+                throw .entryFailed(
+                    relativePath: directoryReportPath, reason: .unreadableEntry, errorNumber: failure.code)
+            }
+            normalized += try WorktreeForkEntryMetadata.copyInodeMetadata(
+                sourceDescriptor: sourceDescriptor,
+                destinationDescriptor: destinationDescriptor,
+                sourceInfo: sourceInfo,
+                relativePath: directoryReportPath
+            )
+        }
+        return normalized
+    }
+
+    private func openRoot(_ url: URL) throws(GitWorktreeForkError) -> Int32 {
+        switch WorktreeForkDescriptors.openRoot(atCanonicalPath: url) {
+        case .success(let descriptor):
+            return descriptor
+        case .failure(let failure):
+            throw .entryFailed(
+                relativePath: reportPath, reason: .unresolvableGitAdministration, errorNumber: failure.code)
+        }
+    }
+
+    private func openDirectory(
+        _ root: Int32,
+        _ relativePath: String,
+        _ directoryReportPath: String
+    ) throws(GitWorktreeForkError) -> Int32 {
+        switch WorktreeForkDescriptors.openDirectory(beneath: root, relativePath: relativePath) {
+        case .success(let descriptor):
+            return descriptor
+        case .failure(let failure):
+            throw .entryFailed(
+                relativePath: directoryReportPath, reason: .unresolvableGitAdministration, errorNumber: failure.code)
         }
     }
 }
