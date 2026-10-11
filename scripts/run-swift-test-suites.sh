@@ -14,6 +14,7 @@ suites=(
   GitLockContractTests
   GitWorktreeRemovalContractTests
   GitPublicContractTests
+  GitStatusOptionsContractTests
   GitInvalidDecodeTests
   GitRedactionTests
   GitWorktreeForkContractTests
@@ -46,6 +47,7 @@ suites=(
   LibGit2PackagingScriptTests
   SourceStructureTests
   GitStatusIntegrationTests
+  GitStatusSubmoduleIntegrationTests
   GitExactCleanBaselineIntegrationTests
   GitImplicitStatusDependencyTests
   GitStagedFetchIntegrationTests
