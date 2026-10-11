@@ -56,15 +56,17 @@ struct LibGit2StatusReader: Sendable {
         guard let observationPlan else {
             return GitStatusFactsRead(facts: facts, exactCleanBaseline: nil)
         }
-        let currentPlan = try observationIdentityReader.plan(repository: repository)
         let isLiteralFullScope = options.pathspecs == nil
-        let exactCleanBaseline =
+        let canMintBaseline =
             observationPlan.support == .supported
+            && isLiteralFullScope && options.includeUntracked && facts.entries.isEmpty
+        // Validation still surfaces index/config errors; only impossible coverage work is skipped.
+        let currentPlan = try observationIdentityReader.plan(
+            repository: repository, requiresWorktreeAttributeCoverage: canMintBaseline)
+        let exactCleanBaseline =
+            canMintBaseline
                 && currentPlan.support == .supported
                 && currentPlan.identity == observationPlan.identity
-                && isLiteralFullScope
-                && options.includeUntracked
-                && facts.entries.isEmpty
             ? GitExactCleanBaseline(observationIdentity: currentPlan.identity)
             : nil
         return GitStatusFactsRead(facts: facts, exactCleanBaseline: exactCleanBaseline)

@@ -81,7 +81,7 @@ struct SourceStructureTests {
         let factsImplementation = readerSource[factsStart.lowerBound..<snapshotStart.lowerBound]
         let noPlanGuard = try #require(factsImplementation.range(of: "guard let observationPlan else"))
         let planResolution = try #require(
-            factsImplementation.range(of: "observationIdentityReader.plan(repository: repository)")
+            factsImplementation.range(of: "observationIdentityReader.plan(")
         )
 
         #expect(noPlanGuard.lowerBound < planResolution.lowerBound)

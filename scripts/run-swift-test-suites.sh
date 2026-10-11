@@ -48,6 +48,7 @@ suites=(
   SourceStructureTests
   GitStatusIntegrationTests
   GitStatusSubmoduleIntegrationTests
+  GitObservationSweepIntegrationTests
   GitExactCleanBaselineIntegrationTests
   GitImplicitStatusDependencyTests
   GitStagedFetchIntegrationTests
