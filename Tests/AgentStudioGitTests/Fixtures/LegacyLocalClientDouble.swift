@@ -53,7 +53,9 @@ struct LegacyLocalClientDouble: AgentStudioGitLocalClient {
         throw unavailable
     }
 
-    func exactLineCountDetail(for worktreePath: URL) async throws(GitDataPlaneError) -> GitStatusLineCountDetail {
+    func exactLineCountDetail(for worktreePath: URL, excludeSubmodules: Bool) async throws(GitDataPlaneError)
+        -> GitStatusLineCountDetail
+    {
         throw unavailable
     }
 

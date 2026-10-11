@@ -116,7 +116,7 @@ struct LibGit2BlockingReadExecutorTests {
             }
         case .exactLineCountDetail:
             await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {
-                _ = try await client.exactLineCountDetail(for: missingRepositoryPath)
+                _ = try await client.exactLineCountDetail(for: missingRepositoryPath, excludeSubmodules: false)
             }
         case .completeStatus:
             await #expect(throws: GitDataPlaneError.repositoryNotFound(path: missingRepositoryPath)) {

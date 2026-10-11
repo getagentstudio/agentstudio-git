@@ -22,7 +22,7 @@ struct GitStatusIntegrationTests {
             for: fixture.repositoryPath,
             options: GitStatusOptions()
         ).facts
-        let detail = try await client.exactLineCountDetail(for: fixture.repositoryPath)
+        let detail = try await client.exactLineCountDetail(for: fixture.repositoryPath, excludeSubmodules: false)
 
         // Assert
         #expect(facts.summary.changedFileCount == 1)
@@ -106,7 +106,7 @@ struct GitStatusIntegrationTests {
         try fixture.write("Lines.txt", contents: "one\ntwo\nthree\n")
         let client = LibGit2AgentStudioGitLocalClient()
 
-        let detail = try await client.exactLineCountDetail(for: fixture.repositoryPath)
+        let detail = try await client.exactLineCountDetail(for: fixture.repositoryPath, excludeSubmodules: false)
         let gitShortstat = try fixture.git.run("diff", "--shortstat", "HEAD", "--")
 
         #expect(detail.linesAdded == 2)

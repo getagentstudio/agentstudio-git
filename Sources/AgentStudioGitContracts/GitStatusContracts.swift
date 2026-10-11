@@ -198,8 +198,9 @@ public struct GitStatusOptions: Codable, Equatable, Hashable, Sendable {
     /// `false` (the default) preserves the existing submodule behavior. When `true`,
     /// staged and unstaged submodule changes, including the submodule's own dirty
     /// worktree, are not reported. libgit2 still reports pending type changes from
-    /// or to a submodule. The complete-status line-count diff also ignores submodules;
-    /// standalone `exactLineCountDetail(for:)` reads retain their existing behavior.
+    /// or to a submodule. The complete-status line-count diff also ignores submodules.
+    /// Standalone `exactLineCountDetail(for:excludeSubmodules:)` reads require their own
+    /// explicit `excludeSubmodules` choice.
     ///
     /// A missing wire key decodes as `false`; the key is omitted when `false` to
     /// preserve the default payload shape.

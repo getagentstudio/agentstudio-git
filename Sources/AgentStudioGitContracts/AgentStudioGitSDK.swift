@@ -28,7 +28,9 @@ public protocol AgentStudioGitLocalClient: Sendable {
         observationPlan: GitStatusObservationPlan?
     ) async throws(GitDataPlaneError)
         -> GitStatusFactsRead
-    func exactLineCountDetail(for worktreePath: URL) async throws(GitDataPlaneError) -> GitStatusLineCountDetail
+    /// Requires the caller to choose whether submodules contribute to line counts.
+    func exactLineCountDetail(for worktreePath: URL, excludeSubmodules: Bool) async throws(GitDataPlaneError)
+        -> GitStatusLineCountDetail
     func completeStatus(for worktreePath: URL, options: GitStatusOptions) async throws(GitDataPlaneError)
         -> GitCompleteStatusSnapshot
     func trackedPaths(for worktreePath: URL, options: GitTrackedPathsOptions) async throws(GitDataPlaneError)

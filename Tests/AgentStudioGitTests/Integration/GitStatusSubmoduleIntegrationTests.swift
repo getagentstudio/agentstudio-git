@@ -22,6 +22,7 @@ struct GitStatusSubmoduleIntegrationTests {
         try parent.write("README.md", contents: "hello\ncommitted child edit\ndirty child edit\n", in: submodulePath)
         try parent.write("README.md", contents: "hello\nparent edit\n")
         let client = LibGit2AgentStudioGitLocalClient()
+        let sdk = AgentStudioGitSDK(local: client, remote: SystemGitRemoteClient())
 
         // Act
         let included = try await client.completeStatus(
@@ -30,7 +31,10 @@ struct GitStatusSubmoduleIntegrationTests {
             for: parent.repositoryPath, options: GitStatusOptions(excludeSubmodules: true))
         let excludedFacts = try await client.statusFacts(
             for: parent.repositoryPath, options: GitStatusOptions(excludeSubmodules: true))
-        let standaloneDetail = try await client.exactLineCountDetail(for: parent.repositoryPath)
+        let standaloneIncluded = try await sdk.local.exactLineCountDetail(
+            for: parent.repositoryPath, excludeSubmodules: false)
+        let standaloneExcluded = try await sdk.local.exactLineCountDetail(
+            for: parent.repositoryPath, excludeSubmodules: true)
         let includedNumstat = try parent.git.run("diff", "--numstat", "--ignore-submodules=none", "HEAD", "--")
         let excludedNumstat = try parent.git.run("diff", "--numstat", "--ignore-submodules=all", "HEAD", "--")
 
@@ -42,8 +46,10 @@ struct GitStatusSubmoduleIntegrationTests {
         #expect(includedNumstat == "1\t0\tREADME.md\n1\t1\tVendor/Child\n")
         #expect(included.lineCountDetail.linesAdded == 2)
         #expect(included.lineCountDetail.linesDeleted == 1)
-        #expect(standaloneDetail.linesAdded == included.lineCountDetail.linesAdded)
-        #expect(standaloneDetail.linesDeleted == included.lineCountDetail.linesDeleted)
+        #expect(standaloneIncluded.linesAdded == included.lineCountDetail.linesAdded)
+        #expect(standaloneIncluded.linesDeleted == included.lineCountDetail.linesDeleted)
+        #expect(standaloneExcluded.linesAdded == 1)
+        #expect(standaloneExcluded.linesDeleted == 0)
 
         #expect(excluded.facts.entries.map(\.path) == ["README.md"])
         #expect(excluded.facts.entries.first?.worktreeState == .modified)
@@ -82,12 +88,17 @@ struct GitStatusSubmoduleIntegrationTests {
         }
         try parent.write("README.md", contents: "hello\nparent edit\n")
         let client = LibGit2AgentStudioGitLocalClient()
+        let sdk = AgentStudioGitSDK(local: client, remote: SystemGitRemoteClient())
 
         // Act
         let included = try await client.completeStatus(
             for: parent.repositoryPath, options: GitStatusOptions(excludeSubmodules: false))
         let excluded = try await client.completeStatus(
             for: parent.repositoryPath, options: GitStatusOptions(excludeSubmodules: true))
+        let standaloneIncluded = try await sdk.local.exactLineCountDetail(
+            for: parent.repositoryPath, excludeSubmodules: false)
+        let standaloneExcluded = try await sdk.local.exactLineCountDetail(
+            for: parent.repositoryPath, excludeSubmodules: true)
         // The status line-count diff does not pair renames, so the CLI oracle uses the same semantics.
         let fullNumstat = try parent.git.run(
             "diff", "--no-renames", "--numstat", "--ignore-submodules=none", "HEAD", "--")
@@ -99,6 +110,10 @@ struct GitStatusSubmoduleIntegrationTests {
         // Assert
         #expect(included.lineCountDetail.linesAdded == fullCounts.additions)
         #expect(included.lineCountDetail.linesDeleted == fullCounts.deletions)
+        #expect(standaloneIncluded.linesAdded == fullCounts.additions)
+        #expect(standaloneIncluded.linesDeleted == fullCounts.deletions)
+        #expect(standaloneExcluded.linesAdded == parentCounts.additions)
+        #expect(standaloneExcluded.linesDeleted == parentCounts.deletions)
         #expect(fullCounts.additions + fullCounts.deletions > parentCounts.additions + parentCounts.deletions)
         #expect(excluded.facts.entries.map(\.path) == [".gitmodules", "README.md"])
         #expect(excluded.lineCountDetail.linesAdded == parentCounts.additions)
@@ -138,12 +153,17 @@ struct GitStatusSubmoduleIntegrationTests {
         }
         try parent.write("README.md", contents: "hello\nparent edit\n")
         let client = LibGit2AgentStudioGitLocalClient()
+        let sdk = AgentStudioGitSDK(local: client, remote: SystemGitRemoteClient())
 
         // Act
         let included = try await client.completeStatus(
             for: parent.repositoryPath, options: GitStatusOptions(excludeSubmodules: false))
         let excluded = try await client.completeStatus(
             for: parent.repositoryPath, options: GitStatusOptions(excludeSubmodules: true))
+        let standaloneIncluded = try await sdk.local.exactLineCountDetail(
+            for: parent.repositoryPath, excludeSubmodules: false)
+        let standaloneExcluded = try await sdk.local.exactLineCountDetail(
+            for: parent.repositoryPath, excludeSubmodules: true)
         let fullNumstat = try parent.git.run(
             "diff", "--no-renames", "--numstat", "--ignore-submodules=none", "HEAD", "--")
         let parentNumstat = try parent.git.run(
@@ -154,6 +174,12 @@ struct GitStatusSubmoduleIntegrationTests {
         // Assert
         #expect(included.lineCountDetail.linesAdded == fullCounts.additions)
         #expect(included.lineCountDetail.linesDeleted == fullCounts.deletions)
+        #expect(standaloneIncluded.linesAdded == fullCounts.additions)
+        #expect(standaloneIncluded.linesDeleted == fullCounts.deletions)
+        #expect(
+            standaloneExcluded.linesAdded == parentCounts.additions + (startsAsSubmodule ? fileKind.lineCount : 0))
+        #expect(
+            standaloneExcluded.linesDeleted == parentCounts.deletions + (startsAsSubmodule ? 0 : fileKind.lineCount))
         #expect(excluded.facts.entries.map(\.path) == [".gitmodules", "README.md", "Vendor/Child"])
         #expect(excluded.facts.entries.first { $0.path == "Vendor/Child" }?.indexState == .typeChanged)
         #expect(

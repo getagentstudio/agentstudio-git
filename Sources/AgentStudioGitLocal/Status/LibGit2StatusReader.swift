@@ -31,9 +31,9 @@ struct LibGit2StatusReader: Sendable {
         }
     }
 
-    func exactLineCountDetail(for worktreePath: URL) throws -> GitStatusLineCountDetail {
+    func exactLineCountDetail(for worktreePath: URL, excludeSubmodules: Bool) throws -> GitStatusLineCountDetail {
         try withRepository(at: worktreePath) { repository in
-            try exactLineCountDetail(repository: repository, excludeSubmodules: false)
+            try exactLineCountDetail(repository: repository, excludeSubmodules: excludeSubmodules)
         }
     }
 
