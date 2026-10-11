@@ -112,7 +112,8 @@ struct WorktreeForkBranchTargetPlanner {
     private func requireBranchFree(_ name: String) throws(GitWorktreeForkError) {
         let use: GitBranchUse
         do {
-            use = try LibGit2BranchUseReader().branchUse(GitBranchUseRequest(repositoryPath: sourceRoot, branchName: name))
+            use = try LibGit2BranchUseReader().branchUse(
+                GitBranchUseRequest(repositoryPath: sourceRoot, branchName: name))
         } catch let error as GitDataPlaneError {
             throw .gitFailure(error)
         } catch {

@@ -167,11 +167,12 @@ private func isCleanLargeFileWorktreeModification(
         return false
     }
 
-    return (try? cleanliness.isCleanSmudgedFile(
-        delta: delta.pointee,
-        repository: repository,
-        worktreePath: String(cString: pathPointer)
-    )) == true
+    return
+        (try? cleanliness.isCleanSmudgedFile(
+            delta: delta.pointee,
+            repository: repository,
+            worktreePath: String(cString: pathPointer)
+        )) == true
 }
 
 extension Optional where Wrapped == String {

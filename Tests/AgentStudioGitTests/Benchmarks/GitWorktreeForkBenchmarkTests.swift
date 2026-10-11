@@ -77,7 +77,8 @@ struct GitWorktreeForkBenchmarkTests {
         let destination = fixture.destination(destinationName)
         let freeBefore = Self.availableBytes(fixture.repository.root)
         let start = ContinuousClock.now
-        let result = try await client.forkWorktree(fixture.request(destination: destination, mode: .detached(start: .sourceHead)))
+        let result = try await client.forkWorktree(
+            fixture.request(destination: destination, mode: .detached(start: .sourceHead)))
         let materializationReport: GitWorktreeMaterializationReport
         if case .copyOnWrite(let report) = result.materialization {
             materializationReport = report

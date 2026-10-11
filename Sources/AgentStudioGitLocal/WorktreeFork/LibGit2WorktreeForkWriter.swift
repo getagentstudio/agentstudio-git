@@ -249,7 +249,8 @@ struct LibGit2WorktreeForkWriter: Sendable {
         if plan.resetsToStart {
             let repository = try WorktreeForkGitHandles.openWorktree(plan.destinationRoot)
             defer { git_repository_free(repository) }
-            largeFiles = largeFileStoreFill.fill(repository: repository, worktreeRootDescriptor: destinationRootDescriptor)
+            largeFiles = largeFileStoreFill.fill(
+                repository: repository, worktreeRootDescriptor: destinationRootDescriptor)
         }
         let snapshot = try WorktreeForkValidator(reader: reader, cancellation: cancellation, faults: faults)
             .validateAttached(
