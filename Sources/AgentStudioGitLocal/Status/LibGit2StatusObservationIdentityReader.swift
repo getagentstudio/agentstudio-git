@@ -5,9 +5,14 @@ import Foundation
 
 struct LibGit2StatusObservationIdentityReader: Sendable {
     private let runtime: LibGit2Runtime
+    private let worktreeAttributeProbe: GitWorktreeAttributeProbe
 
-    init(runtime: LibGit2Runtime = .shared) {
+    init(
+        runtime: LibGit2Runtime = .shared,
+        worktreeAttributeProbe: GitWorktreeAttributeProbe = .live
+    ) {
         self.runtime = runtime
+        self.worktreeAttributeProbe = worktreeAttributeProbe
     }
 
     func plan(for worktreePath: URL) throws -> GitStatusObservationPlan {
@@ -16,13 +21,15 @@ struct LibGit2StatusObservationIdentityReader: Sendable {
         }
     }
 
-    func plan(repository: OpaquePointer) throws -> GitStatusObservationPlan {
+    func plan(repository: OpaquePointer, requiresWorktreeAttributeCoverage: Bool = true) throws
+        -> GitStatusObservationPlan
+    {
         let worktreePath = try requiredGitURL(git_repository_workdir(repository), label: "work directory")
         let gitDirectory = try requiredGitURL(git_repository_path(repository), label: "Git directory")
         let commonDirectory = try requiredGitURL(git_repository_commondir(repository), label: "common Git directory")
         let indexPath = try GitIndexPathResolver().indexPath(repository: repository)
         var scopes = Set<GitStatusObservationScope>()
-        var directScopeCoverage = try hasDirectWorktreeAttributes(repository: repository, worktreePath: worktreePath)
+        var directScopeCoverage = true
 
         func observe(_ kind: GitStatusObservationScopeKind, _ path: URL) {
             directScopeCoverage = directScopeCoverage && isDirectObservationPath(path)
@@ -50,6 +57,11 @@ struct LibGit2StatusObservationIdentityReader: Sendable {
             observe(.subtree, commonDirectory.appending(path: "modules", directoryHint: .isDirectory))
         }
 
+        let attributeCoverageRequired =
+            requiresWorktreeAttributeCoverage && configDependencies.complete && directScopeCoverage
+        let directAttributeCoverage =
+            attributeCoverageRequired
+            ? try hasDirectWorktreeAttributes(repository: repository, worktreePath: worktreePath) : false
         let sortedScopes = scopes.sorted {
             ($0.path.path, $0.kind.rawValue) < ($1.path.path, $1.kind.rawValue)
         }
@@ -60,7 +72,8 @@ struct LibGit2StatusObservationIdentityReader: Sendable {
         return GitStatusObservationPlan(
             identity: identity,
             scopes: sortedScopes,
-            support: configDependencies.complete && directScopeCoverage ? .supported : .unsupported
+            support: configDependencies.complete && directScopeCoverage && directAttributeCoverage
+                ? .supported : .unsupported
         )
     }
 
@@ -179,9 +192,7 @@ struct LibGit2StatusObservationIdentityReader: Sendable {
             var directory = worktreePath.appending(path: String(cString: path)).deletingLastPathComponent()
             while checkedDirectories.insert(directory).inserted {
                 let attributesPath = directory.appending(path: ".gitattributes")
-                if !isDirectObservationPath(attributesPath)
-                    || (try? FileManager.default.destinationOfSymbolicLink(atPath: attributesPath.path)) != nil
-                {
+                if !worktreeAttributeProbe.isDirect(attributesPath.path) {
                     return false
                 }
                 if directory == worktreePath { break }
