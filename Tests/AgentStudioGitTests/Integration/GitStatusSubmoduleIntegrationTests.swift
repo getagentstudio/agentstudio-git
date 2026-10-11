@@ -55,4 +55,136 @@ struct GitStatusSubmoduleIntegrationTests {
         #expect(excluded.lineCountDetail.linesAdded == 1)
         #expect(excluded.lineCountDetail.linesDeleted == 0)
     }
+
+    enum SubmoduleChange: CaseIterable {
+        case added
+        case deleted
+        case renamed
+    }
+
+    @Test("submodule additions deletions and renames exclude gitlink lines", arguments: SubmoduleChange.allCases)
+    func structuralSubmoduleChangesExcludeGitlinkLines(change: SubmoduleChange) async throws {
+        // Arrange
+        let parent = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-status-submodule-structure")
+        defer { parent.remove() }
+        let child = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-status-submodule-source")
+        defer { child.remove() }
+        try parent.git.run("submodule", "add", child.repositoryPath.path, "Vendor/Child")
+        switch change {
+        case .added:
+            break
+        case .deleted:
+            try parent.git.run("commit", "-am", "seed submodule")
+            try parent.git.run("rm", "Vendor/Child")
+        case .renamed:
+            try parent.git.run("commit", "-am", "seed submodule")
+            try parent.git.run("mv", "Vendor/Child", "Vendor/Renamed")
+        }
+        try parent.write("README.md", contents: "hello\nparent edit\n")
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act
+        let included = try await client.completeStatus(
+            for: parent.repositoryPath, options: GitStatusOptions(excludeSubmodules: false))
+        let excluded = try await client.completeStatus(
+            for: parent.repositoryPath, options: GitStatusOptions(excludeSubmodules: true))
+        // The status line-count diff does not pair renames, so the CLI oracle uses the same semantics.
+        let fullNumstat = try parent.git.run(
+            "diff", "--no-renames", "--numstat", "--ignore-submodules=none", "HEAD", "--")
+        let parentNumstat = try parent.git.run(
+            "diff", "--no-renames", "--numstat", "HEAD", "--", "README.md", ".gitmodules")
+        let fullCounts = try lineCounts(from: fullNumstat)
+        let parentCounts = try lineCounts(from: parentNumstat)
+
+        // Assert
+        #expect(included.lineCountDetail.linesAdded == fullCounts.additions)
+        #expect(included.lineCountDetail.linesDeleted == fullCounts.deletions)
+        #expect(fullCounts.additions + fullCounts.deletions > parentCounts.additions + parentCounts.deletions)
+        #expect(excluded.facts.entries.map(\.path) == [".gitmodules", "README.md"])
+        #expect(excluded.lineCountDetail.linesAdded == parentCounts.additions)
+        #expect(excluded.lineCountDetail.linesDeleted == parentCounts.deletions)
+    }
+
+    enum ParentFileKind: CaseIterable {
+        case regularFile
+        case symbolicLink
+
+        var lineCount: Int { self == .regularFile ? 2 : 1 }
+    }
+
+    @Test(
+        "submodule type transitions retain only the non-gitlink side's lines",
+        arguments: [false, true], ParentFileKind.allCases
+    )
+    func submoduleTypeTransitionsRetainParentContent(startsAsSubmodule: Bool, fileKind: ParentFileKind) async throws {
+        // Arrange
+        let parent = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-status-submodule-type")
+        defer { parent.remove() }
+        let child = try GitFixtureRepository.makeRepository(prefix: "agentstudio-git-status-submodule-type-source")
+        defer { child.remove() }
+        if startsAsSubmodule {
+            try parent.git.run("submodule", "add", child.repositoryPath.path, "Vendor/Child")
+        } else {
+            try writeParentFile(fileKind, in: parent)
+            try parent.git.run("add", "Vendor/Child")
+        }
+        try parent.git.run("commit", "-m", "seed transition source")
+        try parent.git.run("rm", "Vendor/Child")
+        if startsAsSubmodule {
+            try writeParentFile(fileKind, in: parent)
+            try parent.git.run("add", "Vendor/Child")
+        } else {
+            try parent.git.run("submodule", "add", child.repositoryPath.path, "Vendor/Child")
+        }
+        try parent.write("README.md", contents: "hello\nparent edit\n")
+        let client = LibGit2AgentStudioGitLocalClient()
+
+        // Act
+        let included = try await client.completeStatus(
+            for: parent.repositoryPath, options: GitStatusOptions(excludeSubmodules: false))
+        let excluded = try await client.completeStatus(
+            for: parent.repositoryPath, options: GitStatusOptions(excludeSubmodules: true))
+        let fullNumstat = try parent.git.run(
+            "diff", "--no-renames", "--numstat", "--ignore-submodules=none", "HEAD", "--")
+        let parentNumstat = try parent.git.run(
+            "diff", "--no-renames", "--numstat", "HEAD", "--", "README.md", ".gitmodules")
+        let fullCounts = try lineCounts(from: fullNumstat)
+        let parentCounts = try lineCounts(from: parentNumstat)
+
+        // Assert
+        #expect(included.lineCountDetail.linesAdded == fullCounts.additions)
+        #expect(included.lineCountDetail.linesDeleted == fullCounts.deletions)
+        #expect(excluded.facts.entries.map(\.path) == [".gitmodules", "README.md", "Vendor/Child"])
+        #expect(excluded.facts.entries.first { $0.path == "Vendor/Child" }?.indexState == .typeChanged)
+        #expect(
+            excluded.lineCountDetail.linesAdded == parentCounts.additions + (startsAsSubmodule ? fileKind.lineCount : 0)
+        )
+        #expect(
+            excluded.lineCountDetail.linesDeleted == parentCounts.deletions
+                + (startsAsSubmodule ? 0 : fileKind.lineCount))
+    }
+
+    private func writeParentFile(_ kind: ParentFileKind, in parent: GitFixtureRepository) throws {
+        switch kind {
+        case .regularFile:
+            try parent.write("Vendor/Child", contents: "parent content\nsecond line\n")
+        case .symbolicLink:
+            let path = parent.repositoryPath.appending(path: "Vendor/Child")
+            try FileManager.default.createDirectory(
+                at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try FileManager.default.createSymbolicLink(atPath: path.path, withDestinationPath: "../README.md")
+        }
+    }
+
+    private func lineCounts(from numstat: String) throws -> (additions: Int, deletions: Int) {
+        var additions = 0
+        var deletions = 0
+        for line in numstat.split(separator: "\n") {
+            let columns = line.split(separator: "\t")
+            try #require(columns.count >= 3)
+            additions += try #require(Int(columns[0]))
+            deletions += try #require(Int(columns[1]))
+        }
+        return (additions, deletions)
+    }
 }
