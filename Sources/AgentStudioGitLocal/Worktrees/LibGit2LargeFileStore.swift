@@ -168,12 +168,13 @@ struct LibGit2LargeFileStore: Sendable {
                 temporaryExists: &temporaryExists,
                 temporaryIdentity: &temporaryIdentity
             ) {
-                let residue = cleanupTemporary(
-                    named: temporaryName,
-                    in: destinationParentDescriptor,
-                    wasCreated: temporaryExists,
-                    identity: temporaryIdentity
-                ) ? nil : residuePath
+                let residue =
+                    cleanupTemporary(
+                        named: temporaryName,
+                        in: destinationParentDescriptor,
+                        wasCreated: temporaryExists,
+                        identity: temporaryIdentity
+                    ) ? nil : residuePath
                 return .failure(LargeFileStoreFailure(reason: failure.reason, residuePath: residue))
             }
             faults.afterTemporaryAcquired(parentDescriptor: destinationParentDescriptor, name: temporaryName)
@@ -190,20 +191,22 @@ struct LibGit2LargeFileStore: Sendable {
         case .success(true):
             return .success(LargeFileStoreMaterialization(didMaterialize: true, residuePath: nil))
         case .success(false):
-            let residue = cleanupTemporary(
-                named: temporaryName,
-                in: destinationParentDescriptor,
-                wasCreated: temporaryExists,
-                identity: temporaryIdentity
-            ) ? nil : residuePath
+            let residue =
+                cleanupTemporary(
+                    named: temporaryName,
+                    in: destinationParentDescriptor,
+                    wasCreated: temporaryExists,
+                    identity: temporaryIdentity
+                ) ? nil : residuePath
             return .success(LargeFileStoreMaterialization(didMaterialize: false, residuePath: residue))
         case .failure(let failure):
-            let residue = cleanupTemporary(
-                named: temporaryName,
-                in: destinationParentDescriptor,
-                wasCreated: temporaryExists,
-                identity: temporaryIdentity
-            ) ? nil : residuePath
+            let residue =
+                cleanupTemporary(
+                    named: temporaryName,
+                    in: destinationParentDescriptor,
+                    wasCreated: temporaryExists,
+                    identity: temporaryIdentity
+                ) ? nil : residuePath
             return .failure(LargeFileStoreFailure(reason: failure.reason, residuePath: residue))
         }
     }

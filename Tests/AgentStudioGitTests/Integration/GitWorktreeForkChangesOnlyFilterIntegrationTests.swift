@@ -19,7 +19,8 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
         // Act
         let result = try await LibGit2AgentStudioGitLocalClient().forkWorktree(
             fixture.request(
-                destination: destination, mode: .newBranch(name: "fork-lfs-smudged", start: .sourceHead, upstream: nil), materialization: .changesOnly)
+                destination: destination, mode: .newBranch(name: "fork-lfs-smudged", start: .sourceHead, upstream: nil),
+                materialization: .changesOnly)
         )
 
         // Assert
@@ -163,7 +164,8 @@ struct GitWorktreeForkChangesOnlyFilterIntegrationTests {
         // Act
         let result = try await LibGit2AgentStudioGitLocalClient().forkWorktree(
             fixture.request(
-                destination: destination, mode: .newBranch(name: "fork-lfs-mode", start: .sourceHead, upstream: nil), materialization: .changesOnly)
+                destination: destination, mode: .newBranch(name: "fork-lfs-mode", start: .sourceHead, upstream: nil),
+                materialization: .changesOnly)
         )
 
         // Assert

@@ -186,11 +186,11 @@ public struct LibGit2AgentStudioGitLocalClient: AgentStudioGitLocalClient {
         }
     }
 
-    public func exactLineCountDetail(for worktreePath: URL) async throws(GitDataPlaneError)
+    public func exactLineCountDetail(for worktreePath: URL, excludeSubmodules: Bool) async throws(GitDataPlaneError)
         -> GitStatusLineCountDetail
     {
         try await executeBlockingRead {
-            try LibGit2StatusReader().exactLineCountDetail(for: worktreePath)
+            try LibGit2StatusReader().exactLineCountDetail(for: worktreePath, excludeSubmodules: excludeSubmodules)
         }
     }
 

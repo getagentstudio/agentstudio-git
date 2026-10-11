@@ -31,9 +31,9 @@ struct LibGit2StatusReader: Sendable {
         }
     }
 
-    func exactLineCountDetail(for worktreePath: URL) throws -> GitStatusLineCountDetail {
+    func exactLineCountDetail(for worktreePath: URL, excludeSubmodules: Bool) throws -> GitStatusLineCountDetail {
         try withRepository(at: worktreePath) { repository in
-            try exactLineCountDetail(repository: repository)
+            try exactLineCountDetail(repository: repository, excludeSubmodules: excludeSubmodules)
         }
     }
 
@@ -41,7 +41,8 @@ struct LibGit2StatusReader: Sendable {
         try withRepository(at: worktreePath) { repository in
             GitCompleteStatusSnapshot(
                 facts: try statusFactsSnapshot(repository: repository, options: options),
-                lineCountDetail: try exactLineCountDetail(repository: repository)
+                lineCountDetail: try exactLineCountDetail(
+                    repository: repository, excludeSubmodules: options.excludeSubmodules)
             )
         }
     }
@@ -97,9 +98,11 @@ struct LibGit2StatusReader: Sendable {
         )
     }
 
-    private func exactLineCountDetail(repository: OpaquePointer) throws -> GitStatusLineCountDetail {
+    private func exactLineCountDetail(repository: OpaquePointer, excludeSubmodules: Bool) throws
+        -> GitStatusLineCountDetail
+    {
         _ = try indexPathResolver.indexPath(repository: repository)
-        let lineCounts = try shortstat(repository: repository)
+        let lineCounts = try shortstat(repository: repository, excludeSubmodules: excludeSubmodules)
         return GitStatusLineCountDetail(
             repositoryRoot: try mainWorktreePath(repository: repository),
             worktreePath: try currentWorktreePath(repository: repository),
@@ -132,6 +135,9 @@ struct LibGit2StatusReader: Sendable {
         if options.includeIgnored {
             statusOptions.flags |= GIT_STATUS_OPT_INCLUDE_IGNORED.rawValue
             statusOptions.flags |= GIT_STATUS_OPT_RECURSE_IGNORED_DIRS.rawValue
+        }
+        if options.excludeSubmodules {
+            statusOptions.flags |= GIT_STATUS_OPT_EXCLUDE_SUBMODULES.rawValue
         }
 
         // Pathspec matching stays enabled (GIT_STATUS_OPT_DISABLE_PATHSPEC_MATCH is never set),
@@ -286,11 +292,18 @@ struct LibGit2StatusReader: Sendable {
         )
     }
 
-    private func shortstat(repository: OpaquePointer) throws -> (insertions: Int, deletions: Int) {
+    private func shortstat(repository: OpaquePointer, excludeSubmodules: Bool) throws -> (
+        insertions: Int, deletions: Int
+    ) {
         var diffOptions = git_diff_options()
         let optionsResult = git_diff_options_init(&diffOptions, UInt32(GIT_DIFF_OPTIONS_VERSION))
         guard optionsResult >= 0 else {
             throw LibGit2ErrorCapture.failure(code: optionsResult)
+        }
+        if excludeSubmodules {
+            diffOptions.ignore_submodules = GIT_SUBMODULE_IGNORE_ALL
+            // The tree-to-index half must also omit staged gitlink changes.
+            diffOptions.flags |= GIT_DIFF_IGNORE_SUBMODULES.rawValue
         }
 
         var headTreeObject: OpaquePointer?
@@ -315,6 +328,10 @@ struct LibGit2StatusReader: Sendable {
         }
         defer { git_diff_free(diff) }
 
+        if excludeSubmodules {
+            return try shortstatExcludingSubmodules(diff: diff)
+        }
+
         var stats: OpaquePointer?
         let statsResult = git_diff_get_stats(&stats, diff)
         guard statsResult >= 0, let stats else {
@@ -326,6 +343,47 @@ struct LibGit2StatusReader: Sendable {
             insertions: Int(git_diff_stats_insertions(stats)),
             deletions: Int(git_diff_stats_deletions(stats))
         )
+    }
+
+    private func shortstatExcludingSubmodules(diff: OpaquePointer) throws -> (insertions: Int, deletions: Int) {
+        var totalInsertions = 0
+        var totalDeletions = 0
+        for index in 0..<git_diff_num_deltas(diff) {
+            guard let delta = git_diff_get_delta(diff, index)?.pointee else {
+                continue
+            }
+            let hasOldContent = delta.old_file.mode != 0 && UInt32(delta.old_file.mode) != GIT_FILEMODE_COMMIT.rawValue
+            let hasNewContent = delta.new_file.mode != 0 && UInt32(delta.new_file.mode) != GIT_FILEMODE_COMMIT.rawValue
+            // Match status's valid-mode filter before generating a patch that could inspect a submodule.
+            guard hasOldContent || hasNewContent else {
+                continue
+            }
+
+            var patch: OpaquePointer?
+            let patchResult = git_patch_from_diff(&patch, diff, index)
+            guard patchResult >= 0 else {
+                throw LibGit2ErrorCapture.failure(code: patchResult)
+            }
+            guard let patch else {
+                continue
+            }
+            defer { git_patch_free(patch) }
+
+            var deltaInsertions = 0
+            var deltaDeletions = 0
+            let statsResult = git_patch_line_stats(nil, &deltaInsertions, &deltaDeletions, patch)
+            guard statsResult >= 0 else {
+                throw LibGit2ErrorCapture.failure(code: statsResult)
+            }
+            // A type transition retains only the ordinary file or symlink side's lines.
+            if hasNewContent {
+                totalInsertions += deltaInsertions
+            }
+            if hasOldContent {
+                totalDeletions += deltaDeletions
+            }
+        }
+        return (totalInsertions, totalDeletions)
     }
 
     private func currentWorktreePath(repository: OpaquePointer) throws -> URL {

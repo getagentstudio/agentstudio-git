@@ -246,7 +246,11 @@ struct WorktreeForkIndexBuilder: Sendable {
         if let onlyPaths {
             options.flags |= GIT_DIFF_DISABLE_PATHSPEC_MATCH.rawValue
             let cStrings = onlyPaths.map { strdup($0) }
-            defer { cStrings.forEach { free($0) } }
+            defer {
+                for cString in cStrings {
+                    free(cString)
+                }
+            }
             var pointers: [UnsafeMutablePointer<CChar>?] = cStrings
             try reachStatRefreshCheckpoint(indexLockFact)
             lockTracker?.beginAttempt(for: [indexLockFact])

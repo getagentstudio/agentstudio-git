@@ -241,7 +241,8 @@ struct GitWorktreeForkChangesOnlyIntegrationTests {
             do {
                 _ = try await phaseClient.forkWorktree(
                     fixture.request(
-                        destination: destination, mode: .newBranch(name: name, start: .sourceHead, upstream: nil), materialization: .changesOnly))
+                        destination: destination, mode: .newBranch(name: name, start: .sourceHead, upstream: nil),
+                        materialization: .changesOnly))
                 failure = nil
             } catch {
                 failure = error
@@ -332,7 +333,8 @@ struct GitWorktreeForkChangesOnlyIntegrationTests {
             do {
                 _ = try await client.forkWorktree(
                     fixture.request(
-                        destination: destination, mode: .newBranch(name: name, start: .sourceHead, upstream: nil), materialization: .changesOnly))
+                        destination: destination, mode: .newBranch(name: name, start: .sourceHead, upstream: nil),
+                        materialization: .changesOnly))
                 failure = nil
             } catch {
                 failure = error

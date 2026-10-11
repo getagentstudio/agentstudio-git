@@ -175,7 +175,8 @@ struct GitWorktreeForkContractTests {
         #expect(decoded == .copyOnWrite(report))
         #expect(
             jsonText(encoded)
-                == "{" + base + #""largeFiles":{"materializedCount":2,"missing":[],"residuePaths":[],"scan":"complete"},"#
+                == "{" + base
+                + #""largeFiles":{"materializedCount":2,"missing":[],"residuePaths":[],"scan":"complete"},"#
                 + tail + #""sourceState":"reset","submodulesNotAtStart":["vendor/sub"]}"#)
         for payload in invalidPayloads {
             #expect(throws: DecodingError.self, "\(payload)") {
@@ -380,7 +381,8 @@ struct GitWorktreeForkContractTests {
         let encoded = try modes.map {
             jsonText(
                 try sortedEncoder().encode(
-                    GitCreateWorktreeRequest(repositoryPath: repositoryPath, destinationPath: destinationPath, mode: $0)))
+                    GitCreateWorktreeRequest(repositoryPath: repositoryPath, destinationPath: destinationPath, mode: $0)
+                ))
         }
         let decoded = try payloads.map { try JSONDecoder().decode(GitWorktreeCreateMode.self, from: Data($0.utf8)) }
 

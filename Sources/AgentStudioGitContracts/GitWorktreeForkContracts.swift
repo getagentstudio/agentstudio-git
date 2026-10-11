@@ -386,7 +386,8 @@ public struct GitWorktreeMaterializationReport: Codable, Equatable, Hashable, Se
             preservedGitRepositoryCount: try container.decode(Int.self, forKey: .preservedGitRepositoryCount),
             recreatedFIFOCount: try container.decode(Int.self, forKey: .recreatedFIFOCount),
             logicalRegularFileBytes: try container.decode(Int64.self, forKey: .logicalRegularFileBytes),
-            skippedEntries: try container.decode([GitWorktreeMaterializationSkippedEntry].self, forKey: .skippedEntries),
+            skippedEntries: try container.decode(
+                [GitWorktreeMaterializationSkippedEntry].self, forKey: .skippedEntries),
             normalizedEntries: try container.decode(
                 [GitWorktreeMaterializationNormalizedEntry].self, forKey: .normalizedEntries),
             ignoredIncludedPatterns: try container.decode([String].self, forKey: .ignoredIncludedPatterns),

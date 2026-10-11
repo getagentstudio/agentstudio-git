@@ -451,8 +451,9 @@ struct GitWorktreeLargeFileFillIntegrationTests {
         #expect(stagingError.withLock { $0 } == nil)
         #expect(creation.largeFiles.materializedCount == 1)
         #expect(creation.largeFiles.scan == .complete)
-        #expect(try GitProcess(repositoryPath: destination).run("ls-files", "--stage", "--", "staged.txt")
-            .contains(expectedBlobOID))
+        #expect(
+            try GitProcess(repositoryPath: destination).run("ls-files", "--stage", "--", "staged.txt")
+                .contains(expectedBlobOID))
         #expect(try Data(contentsOf: stagedFile) == Data("staged during LFS fill\n".utf8))
     }
 
