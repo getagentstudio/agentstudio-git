@@ -1,6 +1,7 @@
 import AgentStudioGitCInterop
 import AgentStudioGitContracts
 import CLibGit2Local
+import Darwin
 import Foundation
 
 struct LibGit2StatusObservationIdentityReader: Sendable {
@@ -182,24 +183,50 @@ struct LibGit2StatusObservationIdentityReader: Sendable {
         }
         defer { git_index_free(index) }
 
-        // libgit2 reads attributes along each indexed path's ancestors. A subtree
-        // watch cannot cover an external symlink target; keep exact reads instead.
-        var checkedDirectories = Set<URL>()
+        // Work only in filesystem bytes until the unique indexed ancestors are known.
+        // A subtree observation cannot cover attributes reached through an alias.
+        var indexedDirectories = Set<[CChar]>()
+        var directoryPaths: [[CChar]] = []
         for entryIndex in 0..<git_index_entrycount(index) {
             guard let entry = git_index_get_byindex(index, entryIndex), let path = entry.pointee.path else {
                 return false
             }
-            var directory = worktreePath.appending(path: String(cString: path)).deletingLastPathComponent()
-            while checkedDirectories.insert(directory).inserted {
-                let attributesPath = directory.appending(path: ".gitattributes")
-                if !worktreeAttributeProbe.isDirect(attributesPath.path) {
-                    return false
-                }
-                if directory == worktreePath { break }
-                let parentDirectory = directory.deletingLastPathComponent()
-                guard parentDirectory != directory else { return false }
-                directory = parentDirectory
+            var relativePath = Array(UnsafeBufferPointer(start: path, count: strlen(path)))
+            let components = relativePath.split(separator: CChar(47), omittingEmptySubsequences: false)
+            guard
+                !components.contains(where: {
+                    $0.isEmpty || $0.elementsEqual([CChar(46)]) || $0.elementsEqual([CChar(46), CChar(46)])
+                })
+            else { return false }
+            while let separator = relativePath.lastIndex(of: CChar(47)) {
+                relativePath.removeSubrange(separator...)
+                if !indexedDirectories.insert(relativePath).inserted { break }
+                directoryPaths.append(relativePath)
             }
+            if indexedDirectories.insert([]).inserted { directoryPaths.append([]) }
+        }
+        guard !indexedDirectories.isEmpty else { return true }
+
+        // Foundation may spell /private/var as /var. Resolve once so NOFOLLOW_ANY
+        // sees the actual root, while public scopes retain their existing spelling.
+        guard let resolvedRoot = worktreePath.path.withCString({ realpath($0, nil) }) else { return false }
+        defer { free(resolvedRoot) }
+        let rootBytes = Array(UnsafeBufferPointer(start: resolvedRoot, count: strlen(resolvedRoot)))
+        let attributesName = Array(".gitattributes".utf8).map { CChar(bitPattern: $0) }
+        for directory in directoryPaths {
+            var attributePath = rootBytes
+            if attributePath.last != CChar(47) { attributePath.append(CChar(47)) }
+            if !directory.isEmpty {
+                attributePath.append(contentsOf: directory)
+                attributePath.append(CChar(47))
+            }
+            attributePath.append(contentsOf: attributesName)
+            attributePath.append(0)
+            let direct = attributePath.withUnsafeBufferPointer { buffer in
+                guard let pathPointer = buffer.baseAddress else { return false }
+                return worktreeAttributeProbe.isDirect(pathPointer)
+            }
+            if !direct { return false }
         }
         return true
     }
