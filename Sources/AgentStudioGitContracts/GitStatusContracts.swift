@@ -193,14 +193,53 @@ public struct GitStatusOptions: Codable, Equatable, Hashable, Sendable {
     /// repository-wide summary facts with partial totals.
     public let pathspecs: [String]?
 
+    /// Skips submodules when reading status entries and complete-status line counts.
+    ///
+    /// `false` (the default) preserves the existing submodule behavior. When `true`,
+    /// staged and unstaged submodule changes, including the submodule's own dirty
+    /// worktree, are not reported. libgit2 still reports pending type changes from
+    /// or to a submodule. The complete-status line-count diff also ignores submodules;
+    /// standalone `exactLineCountDetail(for:)` reads retain their existing behavior.
+    ///
+    /// A missing wire key decodes as `false`; the key is omitted when `false` to
+    /// preserve the default payload shape.
+    public let excludeSubmodules: Bool
+
     public init(
         includeIgnored: Bool = false,
         includeUntracked: Bool = true,
-        pathspecs: [String]? = nil
+        pathspecs: [String]? = nil,
+        excludeSubmodules: Bool = false
     ) {
         self.includeIgnored = includeIgnored
         self.includeUntracked = includeUntracked
         self.pathspecs = pathspecs
+        self.excludeSubmodules = excludeSubmodules
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case includeIgnored
+        case includeUntracked
+        case pathspecs
+        case excludeSubmodules
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.includeIgnored = try container.decode(Bool.self, forKey: .includeIgnored)
+        self.includeUntracked = try container.decode(Bool.self, forKey: .includeUntracked)
+        self.pathspecs = try container.decodeIfPresent([String].self, forKey: .pathspecs)
+        self.excludeSubmodules = try container.decodeIfPresent(Bool.self, forKey: .excludeSubmodules) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(includeIgnored, forKey: .includeIgnored)
+        try container.encode(includeUntracked, forKey: .includeUntracked)
+        try container.encodeIfPresent(pathspecs, forKey: .pathspecs)
+        if excludeSubmodules {
+            try container.encode(excludeSubmodules, forKey: .excludeSubmodules)
+        }
     }
 }
 
